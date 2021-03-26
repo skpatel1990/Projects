@@ -1,0 +1,158 @@
+---
+title: "COMP 4442 - Final Project"
+author: "Stacy Choy / Sameer Patel"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(BAS)
+library(ggplot2)
+library(GGally)
+library(ggpubr)
+```
+
+## Introduction
+Can Bayesian inference and associated statistical methods be used to determine the popularity of a movie according to select characteristics of that movie? In this analysis, the team uses the Bayesian Adaptive Sampling (BAS) package in R to build a model on a well-known dataset in data science - the IMDb/Rotten Tomatoes "movies" dataset. With this model, the team will try to predict the popularity of a movie based on specific characteristics, and subsequently evaluate the performance of the model based on key model metrics.
+
+```{r - Load and Clean Data}
+load("datasets_155040_355775_movies.RData")
+movies_all<-movies
+
+# Cleaning the dataframe by removing incomplete cases, dropping accessory features (eg. columns with non-factor strings, extraneous time data, DVD information, and URLs).
+movies<-na.omit(movies)
+movies = subset(movies, select = -c(title, studio, 
+                                    thtr_rel_month, thtr_rel_day, dvd_rel_year, dvd_rel_month, dvd_rel_day,
+                                    director, actor1, actor2, actor3, actor4, actor5, imdb_url,rt_url))
+```
+
+```{r}
+str(movies)
+summary(movies)
+```
+## Exploratory Data Analysis
+There exist three options for dependent variable: imdb_rating, critics_score, and audience_score. First, determine if the three variables are correlated with one-another. Then, assess which one would be the best choice of response variable based on visual assumption checking. For Bayesian analysis, the same assumptions are upheld as would be in a frequentist model (https://stats.stackexchange.com/questions/435298/what-are-the-assumptions-in-bayesian-statistics). However, Bayesian methods are much more robust to minor violations of these assumptions.
+
+```{r}
+responses = subset(movies, select = c(imdb_rating, critics_score, audience_score))
+```
+
+```{r}
+cor(responses)
+```
+
+```{r}
+hist(movies$imdb_rating)
+hist(movies$critics_score)
+hist(movies$audience_score)
+```
+From the histograms of the response variables identified, IMDb rating appears to be the best candidate for the dependent variable for our model because it has a more normal distribution than the other two, with a slight left-skew. Both critics_score and audience_score appear to have more uniform distributions, with very little bell-shape (if any). Additionally, using domain knowledge, we can now drop critics_rating, critics_score, audience_rating, and audience_score from our movies dataframe.
+
+```{r}
+movies = subset(movies, select = -c(critics_rating, critics_score, audience_rating, audience_score))
+str(movies)
+```
+
+Now, we must evaluate our explanatory variables and analyze their interactions with the chosen response variable. For categorical variables, we will use boxplots to visually assess the interaction/distribution. For continuous variables, we can assess both using scatter plots.
+
+```{r}
+# Continous variables (scatter plots)
+pairs(~imdb_rating+runtime+thtr_rel_year+imdb_num_votes,data=movies,main = "Pairs Plot of Continuous Variables")
+
+# Categorical variables (box plots)
+ggboxplot(movies,x="title_type",y="imdb_rating")
+ggboxplot(movies,x="genre",y="imdb_rating") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggboxplot(movies,x="mpaa_rating",y="imdb_rating")
+ggboxplot(movies,x="best_pic_nom",y="imdb_rating")
+ggboxplot(movies,x="best_pic_win",y="imdb_rating")
+ggboxplot(movies,x="best_actor_win",y="imdb_rating")
+ggboxplot(movies,x="best_actress_win",y="imdb_rating")
+ggboxplot(movies,x="best_dir_win",y="imdb_rating")
+ggboxplot(movies,x="top200_box",y="imdb_rating")
+```
+
+From the above charts, a number of important considerations are evident. 
+
+In examining the box plots, it's important to first note that Bayesian methods are much more flexible to violations of the assumptions (https://www.johndcook.com/blog/2009/04/28/reasons-to-use-bayesian-inference/). As such, things like "TV Movie" from the title_type column, low-popularity genres, and less common MPAA ratings will remain in the model for the purposes of this analysis despite the apparent violations of normality and homoscedasticity. However, for future analyses, removal of these factors can be considered in order to improve model performance.
+
+From the scatter plots, it's evident that the number of votes exhibits a distinct right-skew, and as such is a candidate for log transformation of the imdb_num_votes variable. Leaving it as-is would place too heavy of a weight on this variable.
+
+```{r}
+movies<-mutate(movies,imdb_num_votes=log(imdb_num_votes))
+movies_all<-mutate(movies_all,imdb_num_votes=log(imdb_num_votes))
+```
+
+## Bayesian Analysis
+
+```{r - Build Bayesian Model}
+movie_bas<-bas.lm(imdb_rating ~ .,
+                  data = movies,
+                  method = "MCMC",
+                  prior = "ZS-null",
+                  modelprior = uniform())
+```
+
+```{r}
+summary(movie_bas)
+```
+
+The model returns a list of explanatory variables and their associated marginal inclusion probabilities (0 to 1 scale). It also returns the top 5 best models, along with whether particular variables are to be included or not. Summary statistics include the Bayes factor (BF) for each model in comparison to the highest probability model, the posterior probabilities (PostProbs), the R-squared, the dimension (dim), and the log marginal likelihood (logmarg) of each model under the selected prior distribution.
+
+The BAS package and the diagnostics() function allows R to easily display diagnostic plots for our model.
+```{r}
+#Convergence Plot: Posterior Inclusion Probabilities (PIP):
+diagnostics(movie_bas, type="pip", col = "blue", pch = 16, cex = 1.5)
+
+#Convergence Plot: Posterior Model Probabilities:
+diagnostics(movie_bas, type = "model", col = "blue", pch = 16, cex = 1.5)
+
+#Residuals Versus Fitted Values Using BMA:
+plot(movie_bas, which = 1, add.smooth = F, ask = F, pch = 16)
+abline(a = 0, b = 0, col = "darkgrey", lwd = 2)
+
+#Cumulative Sampled Probability:
+plot(movie_bas, which=2, ask = F)
+
+#Model Complexity:
+plot(movie_bas, which=3, ask = F)
+
+#Marginal Inclusion Probability
+plot(movie_bas, which = 4, ask = F, col.in = "blue", col.ex = "darkgrey", lwd = 3)
+```
+Posterior Inclusion Probabilities (PIP) Convergence plot shows that all points are on the 45 degree diagonal. We can then say that the posterior inclusion probability of each variable from MCMC have converged well enough to the theoretical posterior inclusion probability.
+Similarly, the Posterior Model Probabilities Convergence plot shows all points close-enough to the 45 degree diagonal. In theory, we could increase the number of MCMC iterations to improve the model. However, model improvement would be negligible in comparison to the greatly increased runtime of bas.lm() method.
+
+The Residual vs. Fitted plot shows an even spread with no apparent heteroscedasticity and minimal outliers.
+
+The Model Probabilities plot displays the cumulative probability of the models in the order that they are sampled. From the graph we can see the cumulative probability starts to level at around 6000 models, with each additional model adding only a small increment to the cumulative probability.
+
+The Model Complexity plot shows the number of regression coefficients, including the intercept, versus the log of the marginal likelihood of the model. The plot for our model indicates the highest log marginal being reached at 14 dimensions, with no significant increase beyond 10 dimensions.
+
+Finally, the Marginal Inclusion Probability plot displays the relative importance of different predictors. The blue lines correspond to the variables where the marginal posterior inclusion probability (pip), is greater than 0.5, suggesting that these variables are important to the accuracy of our model's predictions.
+
+## Prediction
+We are now ready to predict movie popularity using our model. For our analysis, we selected the movie Godzilla to predict based on the Bayesian model averaging model, or BMA. By setting the "estimator" option in the predict function to "BMA", a single model is obtained by averaging the top 20 models using their posterior probabilities. This approach leads to all explanatory variables being factored into the prediction.
+
+```{r}
+#Godzilla reference information:
+godzilla<-movies_all[movies_all$title == "Godzilla",]
+```
+
+```{r}
+prediction <- predict(movie_bas, godzilla, estimator="BMA", interval = "predict", se.fit=TRUE)
+```
+
+```{r}
+data.frame('Movie' = 'Godzilla',
+           'Estimated IMDB rating' = prediction$Ybma, 
+           'Real IMDB rating' = 6.5)
+```
+
+Our model estimates an IMDb rating of 6.64 for the movie Godzilla based on the BMA, which is very close to the real IMDb rating of 6.5 (within 3%). This seems to indicate robust model performance. A consideration for further analysis would be to return predictions for several/all of the movies, and run statistical analyses to compare predicted values vs. actual. However, the predict() function for Bayesian analysis takes an extremely long time to run, and consequently such an analysis would not be feasible at this juncture given time constraints.
